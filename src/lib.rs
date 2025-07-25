@@ -107,6 +107,62 @@ impl Properties {
         self.inner.get(key)
     }
 
+    pub fn get_value<T: FromStr>(&self, key: &str) -> Result<Option<T>, T::Err> {
+        if let Some(property_doc) = self.get(key) {
+            if let Some(value_str) = &property_doc.value {
+                return Ok(Some(value_str.parse()?));
+            } else {
+                // Only key name, no value
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &PropertyDocument)> {
+        self.inner.iter()
+    }
+
+    pub fn set(&mut self, key: PropertyKey, value: PropertyValue) -> Option<PropertyDocument> {
+        let property_doc = PropertyDocument::from(value);
+        self.insert(key, property_doc)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<PropertyDocument> {
+        #[cfg(feature = "ordered")]
+        {
+            self.inner.shift_remove(key)
+        }
+        #[cfg(not(feature = "ordered"))]
+        {
+            self.inner.remove(key)
+        }
+    }
+
+    #[cfg(feature = "ordered")]
+    pub fn remove_at(&mut self, idx: usize) -> Option<(String, PropertyDocument)> {
+        self.inner.shift_remove_index(idx)
+    }
+
+    #[cfg(feature = "ordered")]
+    pub fn replace_at(
+        &mut self,
+        idx: usize,
+        key: PropertyKey,
+        value: PropertyDocument,
+    ) -> Option<(String, PropertyDocument)> {
+        let entry = self.inner.get_index_entry(idx);
+        if let Some(mut entry) = entry {
+            use indexmap::map::MutableEntryKey;
+            let old_key = std::mem::replace(entry.key_mut(), key);
+            let old_value = std::mem::replace(entry.get_mut(), value);
+            return Some((old_key, old_value));
+        } else {
+            self.insert(key, value);
+        }
+        None
+    }
+
     pub fn contains_key(&self, key: &str) -> bool {
         self.inner.contains_key(key)
     }
@@ -305,14 +361,7 @@ impl Ini {
         let section_key = section_name.map(|s| s.to_string());
 
         if let Some(section_doc) = self.sections.get(&section_key) {
-            if let Some(property_doc) = section_doc.data.get(key) {
-                if let Some(value_str) = &property_doc.value {
-                    return Ok(Some(value_str.parse()?));
-                } else {
-                    // Only key name, no value
-                    return Ok(None);
-                }
-            }
+            return section_doc.get_value(key);
         }
         Ok(None)
     }
@@ -377,10 +426,16 @@ impl Ini {
         &self.sections
     }
 
-    /// Get the specified section
+    /// Get the specified section properties
     pub fn section(&self, name: Option<&str>) -> Option<&SectionDocument> {
         let key = name.map(|s| s.to_string());
         self.sections.get(&key)
+    }
+
+    /// Get a mutable reference to the specified section properties
+    pub fn section_mut(&mut self, name: Option<&str>) -> Option<&mut SectionDocument> {
+        let key = name.map(|s| s.to_string());
+        self.sections.get_mut(&key)
     }
 }
 
