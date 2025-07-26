@@ -14,9 +14,9 @@ use ini_engine::Item;
 /// Wraps section and property values after parsing
 /// Records their preceding documentation content and line numbers
 #[derive(Clone)]
-pub struct ReadonlyDocument<T> {
+pub struct ReadonlyDocument<'a, T> {
     // Each line of documentation content before the data line
-    doc_texts: Vec<String>,
+    doc_texts: Vec<&'a str>,
     line_num: usize,
     data: T,
 }
@@ -30,11 +30,29 @@ pub struct EditableDocument<T> {
     data: T,
 }
 
+impl<T> EditableDocument<T> {
+    pub fn new(data: T, doc_texts: Vec<String>) -> Self {
+        Self { doc_texts, data }
+    }
+}
+
+impl<S1, S2> From<ReadonlyDocument<'_, S1>> for EditableDocument<S2>
+where
+    S1: Into<S2>,
+{
+    fn from(value: ReadonlyDocument<'_, S1>) -> Self {
+        EditableDocument {
+            doc_texts: value.doc_texts.iter().map(|s| s.to_string()).collect(),
+            data: value.data.into(),
+        }
+    }
+}
+
 /// For backward compatibility, keep the original Document type alias
 pub type Document<T> = EditableDocument<T>;
 
-impl<T> ReadonlyDocument<T> {
-    pub fn new(data: T, line_num: usize, doc_texts: Vec<String>) -> Self {
+impl<'a, T> ReadonlyDocument<'a, T> {
+    pub fn new(data: T, line_num: usize, doc_texts: Vec<&'a str>) -> Self {
         Self {
             doc_texts,
             line_num,
@@ -42,7 +60,7 @@ impl<T> ReadonlyDocument<T> {
         }
     }
 
-    pub fn doc_texts(&self) -> &[String] {
+    pub fn doc_texts(&self) -> &[&'a str] {
         &self.doc_texts
     }
 
@@ -55,15 +73,11 @@ impl<T> ReadonlyDocument<T> {
     where
         T: Clone,
     {
-        EditableDocument::new(self.data.clone(), self.doc_texts.clone())
+        EditableDocument::from(self.clone())
     }
 }
 
 impl<T> EditableDocument<T> {
-    pub fn new(data: T, doc_texts: Vec<String>) -> Self {
-        Self { doc_texts, data }
-    }
-
     pub fn doc_texts(&self) -> &[String] {
         &self.doc_texts
     }
@@ -77,13 +91,7 @@ impl<T> EditableDocument<T> {
     }
 }
 
-impl<T> From<ReadonlyDocument<T>> for EditableDocument<T> {
-    fn from(readonly: ReadonlyDocument<T>) -> Self {
-        EditableDocument::new(readonly.data, readonly.doc_texts)
-    }
-}
-
-impl<T: Display> Display for ReadonlyDocument<T> {
+impl<T: Display> Display for ReadonlyDocument<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for doc_line in &self.doc_texts {
             writeln!(f, "{}", doc_line)?;
@@ -101,7 +109,7 @@ impl<T: Display> Display for EditableDocument<T> {
     }
 }
 
-impl<T> Deref for ReadonlyDocument<T> {
+impl<T> Deref for ReadonlyDocument<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -123,36 +131,49 @@ impl<T> Deref for EditableDocument<T> {
     }
 }
 
-impl From<Properties> for EditableDocument<Properties> {
-    fn from(properties: Properties) -> Self {
-        EditableDocument::new(properties, vec![])
+impl<S> From<PropertyValue<S>> for EditableDocument<PropertyValue<S>> {
+    fn from(property_value: PropertyValue<S>) -> Self {
+        EditableDocument {
+            data: property_value,
+            doc_texts: vec![],
+        }
     }
 }
 
-impl From<PropertyValue> for EditableDocument<PropertyValue> {
-    fn from(property_value: PropertyValue) -> Self {
-        EditableDocument::new(property_value, vec![])
+impl From<PropertyValue<&str>> for EditableDocument<PropertyValue<String>> {
+    fn from(prop: PropertyValue<&str>) -> Self {
+        EditableDocument {
+            data: PropertyValue {
+                value: prop.value.map(|s| s.to_string()),
+            },
+            doc_texts: vec![],
+        }
     }
 }
+pub type ReadonlyPropertyDocument<'a> = ReadonlyDocument<'a, PropertyValue<&'a str>>;
+pub type ReadonlySectionDocument<'a> = ReadonlyDocument<'a, ReadonlyProperties<'a>>;
 
-pub type ReadonlyPropertyDocument = ReadonlyDocument<PropertyValue>;
-pub type ReadonlySectionDocument = ReadonlyDocument<ReadonlyProperties>;
-
-pub type EditablePropertyDocument = EditableDocument<PropertyValue>;
+pub type EditablePropertyDocument = EditableDocument<PropertyValue<String>>;
 pub type EditableSectionDocument = EditableDocument<Properties>;
 
 pub type PropertyDocument = EditablePropertyDocument;
 pub type SectionDocument = EditableSectionDocument;
 
-pub type SectionKey = Option<String>;
-pub type PropertyKey = String;
-
 #[derive(Clone)]
-pub struct PropertyValue {
-    pub value: Option<String>,
+pub struct PropertyValue<S> {
+    pub value: Option<S>,
 }
 
-impl Display for PropertyValue {
+// Allow conversion from PropertyValue<&str> to PropertyValue<String>
+impl From<PropertyValue<&str>> for PropertyValue<String> {
+    fn from(prop: PropertyValue<&str>) -> Self {
+        PropertyValue {
+            value: prop.value.map(|s| s.to_string()),
+        }
+    }
+}
+
+impl<S: Display> Display for PropertyValue<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(value) = &self.value {
             write!(f, "{}", value)
@@ -168,25 +189,59 @@ pub struct Properties {
     inner: Map<String, PropertyDocument>,
 }
 
-#[derive(Clone)]
-pub struct ReadonlyProperties {
-    inner: Map<String, ReadonlyPropertyDocument>,
+impl Display for Properties {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (key, doc) in &self.inner {
+            for doc_line in doc.doc_texts() {
+                writeln!(f, "{}", doc_line)?;
+            }
+            if let Some(value) = &doc.value {
+                writeln!(f, "{}={}", key, value)?;
+            } else {
+                writeln!(f, "{}", key)?;
+            }
+        }
+        Ok(())
+    }
 }
 
-impl ReadonlyProperties {
+#[derive(Clone)]
+pub struct ReadonlyProperties<'a> {
+    inner: Map<&'a str, ReadonlyPropertyDocument<'a>>,
+}
+
+impl<'a> Display for ReadonlyProperties<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (key, doc) in &self.inner {
+            for doc_line in doc.doc_texts() {
+                writeln!(f, "{}", doc_line)?;
+            }
+            if let Some(value) = &doc.value {
+                writeln!(f, "{}={}", key, value)?;
+            } else {
+                writeln!(f, "{}", key)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> ReadonlyProperties<'a> {
     pub fn new() -> Self {
         Self { inner: Map::new() }
     }
 
-    pub fn get(&self, key: &str) -> Option<&ReadonlyPropertyDocument> {
+    pub fn get(&self, key: &str) -> Option<&ReadonlyPropertyDocument<'a>> {
         self.inner.get(key)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &ReadonlyPropertyDocument)> {
-        self.inner.iter()
+    pub fn iter(
+        &'a self,
+    ) -> impl Iterator<Item = (&'a str, &'a ReadonlyPropertyDocument<'a>)> + 'a {
+        self.inner.iter().map(|(k, v)| (*k, v))
     }
 
-    pub fn into_iter(self) -> impl Iterator<Item = (String, ReadonlyPropertyDocument)> {
+    pub fn into_iter(self) -> impl Iterator<Item = (&'a str, ReadonlyPropertyDocument<'a>)> {
         self.inner.into_iter()
     }
 }
@@ -196,8 +251,8 @@ impl Properties {
         Self { inner: Map::new() }
     }
 
-    fn insert(&mut self, key: PropertyKey, value: PropertyDocument) -> Option<PropertyDocument> {
-        self.inner.insert(key, value)
+    fn insert(&mut self, key: &str, value: PropertyDocument) -> Option<PropertyDocument> {
+        self.inner.insert(key.to_owned(), value)
     }
 
     pub fn get(&self, key: &str) -> Option<&PropertyDocument> {
@@ -228,7 +283,7 @@ impl Properties {
         self.inner.into_iter()
     }
 
-    pub fn set(&mut self, key: PropertyKey, value: PropertyValue) -> Option<PropertyDocument> {
+    pub fn set(&mut self, key: &str, value: PropertyValue<String>) -> Option<PropertyDocument> {
         let value = EditableDocument::from(value);
         self.insert(key, value)
     }
@@ -244,13 +299,13 @@ impl Properties {
     pub fn replace_at(
         &mut self,
         idx: usize,
-        key: PropertyKey,
+        key: &str,
         value: PropertyDocument,
     ) -> Option<(String, PropertyDocument)> {
         let entry = self.inner.get_index_entry(idx);
         if let Some(mut entry) = entry {
             use indexmap::map::MutableEntryKey;
-            let old_key = std::mem::replace(entry.key_mut(), key);
+            let old_key = std::mem::replace(entry.key_mut(), key.to_string());
             let old_value = std::mem::replace(entry.get_mut(), value);
             return Some((old_key, old_value));
         } else {
@@ -268,35 +323,16 @@ impl Properties {
     }
 }
 
-impl From<ReadonlyProperties> for Properties {
+impl From<ReadonlyProperties<'_>> for Properties {
     fn from(readonly_properties: ReadonlyProperties) -> Self {
         let mut properties = Properties::new();
 
         for (prop_key, readonly_prop) in readonly_properties.into_iter() {
             let editable_prop = EditableDocument::from(readonly_prop);
-            properties.inner.insert(prop_key, editable_prop);
+            properties.inner.insert(prop_key.to_owned(), editable_prop);
         }
 
         properties
-    }
-}
-
-impl Display for Properties {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (property_key, property_doc) in &self.inner {
-            // Print property's documentation content
-            for doc_line in &property_doc.doc_texts {
-                writeln!(f, "{}", doc_line)?;
-            }
-
-            // Print property
-            if let Some(value) = &property_doc.value {
-                writeln!(f, "{}={}", property_key, value)?;
-            } else {
-                writeln!(f, "{}", property_key)?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -325,40 +361,42 @@ pub enum IniError {
     Config(#[from] ConfigError),
 }
 
-pub struct ReadonlyIni {
-    sections: Map<SectionKey, ReadonlyDocument<ReadonlyProperties>>,
+pub struct ReadonlyIni<'a> {
+    sections: Map<Option<&'a str>, ReadonlyDocument<'a, ReadonlyProperties<'a>>>,
 }
 
-impl ReadonlyIni {
-    pub fn section(&self, name: Option<&str>) -> Option<&ReadonlyDocument<ReadonlyProperties>> {
-        let key = name.map(|s| s.to_string());
-        self.sections.get(&key)
+impl<'a> ReadonlyIni<'a> {
+    pub fn section(
+        &'a self,
+        name: Option<&'a str>,
+    ) -> Option<&'a ReadonlyDocument<'a, ReadonlyProperties<'a>>> {
+        self.sections.get(&name)
     }
 
-    pub fn sections(&self) -> &Map<SectionKey, ReadonlyDocument<ReadonlyProperties>> {
+    pub fn sections(
+        &'a self,
+    ) -> &'a Map<Option<&'a str>, ReadonlyDocument<'a, ReadonlyProperties<'a>>> {
         &self.sections
     }
 
     pub fn get_property(
-        &self,
-        section_name: Option<&str>,
+        &'a self,
+        section_name: Option<&'a str>,
         key: &str,
-    ) -> Option<&ReadonlyPropertyDocument> {
+    ) -> Option<&'a ReadonlyPropertyDocument<'a>> {
         self.section(section_name)
             .and_then(|section| section.get(key))
     }
 }
 
-impl From<ReadonlyIni> for Ini {
-    fn from(readonly_ini: ReadonlyIni) -> Self {
+impl<'a> From<ReadonlyIni<'a>> for Ini {
+    fn from(readonly_ini: ReadonlyIni<'a>) -> Self {
         let editable_sections = readonly_ini
             .sections
             .into_iter()
             .map(|(section_key, readonly_section)| {
-                let editable_properties = Properties::from(readonly_section.data);
-                let editable_section =
-                    EditableDocument::new(editable_properties, readonly_section.doc_texts);
-                (section_key, editable_section)
+                let editable_section = EditableDocument::from(readonly_section);
+                (section_key.map(|s| s.to_owned()), editable_section)
             })
             .collect();
 
@@ -368,30 +406,29 @@ impl From<ReadonlyIni> for Ini {
     }
 }
 
-impl TryFrom<Vec<Item<'_>>> for ReadonlyIni {
+impl<'a> TryFrom<Vec<Item<'a>>> for ReadonlyIni<'a> {
     type Error = IniError;
 
-    fn try_from(value: Vec<Item<'_>>) -> Result<Self, Self::Error> {
+    fn try_from(value: Vec<Item<'a>>) -> Result<Self, Self::Error> {
         let mut sections = Map::new();
         // Create initial structure for global section
         sections.insert(
             None,
             ReadonlyDocument::new(ReadonlyProperties::new(), 0, vec![]),
         );
-
-        let mut current_section: Option<String> = None;
-        let mut pending_docs: Vec<String> = Vec::new();
-        let mut current_line_num = 1; // Start counting from line 1
-
+        let mut current_section: Option<&'a str> = None;
+        let mut pending_docs: Vec<&str> = Vec::new();
+        let mut line_num = 0;
         for item in value {
+            if !matches!(item, Item::SectionEnd) {
+                line_num += 1;
+            }
             match item {
                 Item::Blank { raw } => {
-                    pending_docs.push(raw.to_string());
-                    current_line_num += 1; // Count blank lines too
+                    pending_docs.push(raw);
                 }
                 Item::Comment { raw, .. } => {
-                    pending_docs.push(raw.to_string());
-                    current_line_num += 1; // Count comment lines too
+                    pending_docs.push(raw);
                 }
                 Item::Section { name, raw: _ } => {
                     // Save current pending_docs for new section
@@ -402,23 +439,16 @@ impl TryFrom<Vec<Item<'_>>> for ReadonlyIni {
                     };
 
                     // Create new section, record current line number
-                    let new_section = ReadonlyDocument::new(
-                        ReadonlyProperties::new(),
-                        current_line_num,
-                        section_docs,
-                    );
-                    sections.insert(Some(name.to_string()), new_section);
-                    current_section = Some(name.to_string());
-
-                    current_line_num += 1; // Count section lines
+                    let new_section =
+                        ReadonlyDocument::new(ReadonlyProperties::new(), line_num, section_docs);
+                    sections.insert(Some(name), new_section);
+                    current_section = Some(name);
                 }
                 Item::Property { key, val, raw: _ } => {
                     let section_key = current_section.clone();
 
                     // Create PropertyValue and PropertyDocument with line number
-                    let property_value = PropertyValue {
-                        value: val.map(|v| v.to_string()),
-                    };
+                    let property_value = PropertyValue { value: val };
 
                     let docs = if !pending_docs.is_empty() {
                         pending_docs.drain(..).collect()
@@ -426,15 +456,12 @@ impl TryFrom<Vec<Item<'_>>> for ReadonlyIni {
                         vec![]
                     };
 
-                    let property_doc =
-                        ReadonlyDocument::new(property_value, current_line_num, docs);
+                    let property_doc = ReadonlyDocument::new(property_value, line_num, docs);
 
                     // Insert property to corresponding section
                     if let Some(section_doc) = sections.get_mut(&section_key) {
-                        section_doc.data.inner.insert(key.to_string(), property_doc);
+                        section_doc.data.inner.insert(key, property_doc);
                     }
-
-                    current_line_num += 1; // Count property lines
                 }
                 Item::SectionEnd => {
                     // SectionEnd does not need special handling
@@ -450,7 +477,7 @@ impl TryFrom<Vec<Item<'_>>> for ReadonlyIni {
 }
 
 pub struct Ini {
-    sections: Map<SectionKey, SectionDocument>,
+    sections: Map<Option<String>, SectionDocument>,
 }
 
 impl Ini {
@@ -458,7 +485,7 @@ impl Ini {
     pub fn new() -> Self {
         let mut sections = Map::new();
         // Preset a general section
-        sections.insert(None, Properties::new().into());
+        sections.insert(None, SectionDocument::new(Properties::new(), vec![]));
         Self { sections }
     }
 
@@ -472,7 +499,7 @@ impl Ini {
         let section_key = Some(section_name.to_string());
         self.sections
             .entry(section_key)
-            .or_insert_with(|| Properties::new().into());
+            .or_insert_with(|| SectionDocument::new(Properties::new(), vec![]));
     }
 
     /// Set a property value in a section.
@@ -507,7 +534,7 @@ impl Ini {
         let property_value = PropertyValue {
             value: value.map(|v| v.to_string()),
         };
-        properties.set(key.to_string(), property_value);
+        properties.set(key, property_value);
 
         Ok(())
     }
@@ -629,7 +656,7 @@ impl Ini {
     }
 
     /// Get all sections
-    pub fn sections(&self) -> &Map<SectionKey, SectionDocument> {
+    pub fn sections(&self) -> &Map<Option<String>, SectionDocument> {
         &self.sections
     }
 
@@ -662,7 +689,8 @@ impl Display for Ini {
         // Then handle named sections
         for (section_key, section_doc) in &self.sections {
             if section_key.is_none() {
-                continue; // Global section already handled
+                // Global section already handled
+                continue;
             }
 
             // Print documentation content of the section
@@ -704,7 +732,6 @@ impl TryFrom<Vec<Item<'_>>> for Ini {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_item_structure() {
         // For debugging the structure of Item
@@ -807,16 +834,12 @@ static_dir=/var/www
     fn test_document_display() {
         // Test the Display implementation of Document<T>
         let property_value = PropertyValue {
-            value: Some("test_value".to_string()),
+            value: Some("test_value"),
         };
 
-        let doc_texts = vec![
-            "; This is a comment".to_string(),
-            String::new(),
-            "; Another comment".to_string(),
-        ];
+        let doc_texts = vec!["; This is a comment", "", "; Another comment"];
 
-        let property_doc = Document::new(property_value, doc_texts);
+        let property_doc = ReadonlyDocument::new(property_value, 0, doc_texts);
         let result = property_doc.to_string();
 
         println!("PropertyDocument Display result:\n{}", result);
@@ -825,16 +848,16 @@ static_dir=/var/www
         assert!(result.contains("test_value"));
 
         // Test the Display of Properties
-        let mut properties = Properties::new();
-        properties.insert("key1".to_string(), property_doc);
+        let mut properties = ReadonlyProperties::new();
+        properties.inner.insert("key1", property_doc);
 
         let properties_result = properties.to_string();
         println!("Properties Display result:\n{}", properties_result);
         assert!(properties_result.contains("key1=test_value"));
 
         // Test the Display of SectionDocument
-        let section_docs = vec!["; Section comment".to_string()];
-        let section_doc = Document::new(properties, section_docs);
+        let section_docs = vec!["; Section comment"];
+        let section_doc = ReadonlyDocument::new(properties, 0, section_docs);
 
         let section_result = section_doc.to_string();
         println!("SectionDocument Display result:\n{}", section_result);
@@ -1460,16 +1483,17 @@ port=3306
     fn test_from_readonly_document_trait() {
         // 创建一个 ReadonlyDocument
         let property_value = PropertyValue {
-            value: Some("test_value".to_string()),
+            value: Some("test_value"),
         };
-        let doc_texts = vec!["; Test comment".to_string()];
+        let doc_texts = vec!["; Test comment"];
         let readonly_doc = ReadonlyDocument::new(property_value, 5, doc_texts.clone());
 
         // 使用 From trait 转换为 EditableDocument
-        let editable_doc: EditableDocument<PropertyValue> = readonly_doc.into();
+        let editable_doc: EditableDocument<PropertyValue<String>> = readonly_doc.into();
 
         // Verify conversion result
-        assert_eq!(editable_doc.doc_texts(), &doc_texts);
+        let expected_doc_texts: Vec<String> = doc_texts.iter().map(|s| s.to_string()).collect();
+        assert_eq!(editable_doc.doc_texts(), &expected_doc_texts);
         assert_eq!(editable_doc.value, Some("test_value".to_string()));
 
         println!("ReadonlyDocument From trait conversion test successful");
@@ -1483,23 +1507,25 @@ port=3306
         let property_value = PropertyValue {
             value: Some("test_value".to_string()),
         };
-        let editable_prop: EditableDocument<PropertyValue> = property_value.into();
+        let editable_prop: EditableDocument<PropertyValue<String>> =
+            EditableDocument::new(property_value, vec!["; Property comment".to_string()]);
         assert_eq!(editable_prop.value, Some("test_value".to_string()));
 
         // 2. Properties -> EditableDocument<Properties>
         let properties = Properties::new();
-        let editable_section: EditableDocument<Properties> = properties.into();
+        let editable_section: EditableDocument<Properties> =
+            EditableDocument::new(properties, vec!["; Section comment".to_string()]);
         assert!(editable_section.is_empty());
 
         // 3. ReadonlyDocument<PropertyValue> -> EditableDocument<PropertyValue>
         let readonly_prop = ReadonlyDocument::new(
             PropertyValue {
-                value: Some("readonly_value".to_string()),
+                value: Some("readonly_value"),
             },
             10,
-            vec!["; Comment".to_string()],
+            vec!["; Comment"],
         );
-        let editable_prop2: EditableDocument<PropertyValue> = readonly_prop.into();
+        let editable_prop2: EditableDocument<PropertyValue<String>> = readonly_prop.into();
         assert_eq!(editable_prop2.value, Some("readonly_value".to_string()));
         assert_eq!(editable_prop2.doc_texts(), &["; Comment".to_string()]);
 
