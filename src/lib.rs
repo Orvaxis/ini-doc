@@ -14,7 +14,7 @@ use ini_engine::Item;
 /// Wraps section and property values after parsing
 /// Records their preceding documentation content and line numbers
 #[derive(Clone)]
-pub struct ParsedDocument<T> {
+pub struct ReadonlyDocument<T> {
     // Each line of documentation content before the data line
     doc_texts: Vec<String>,
     line_num: usize,
@@ -33,7 +33,7 @@ pub struct EditableDocument<T> {
 /// For backward compatibility, keep the original Document type alias
 pub type Document<T> = EditableDocument<T>;
 
-impl<T> ParsedDocument<T> {
+impl<T> ReadonlyDocument<T> {
     pub fn new(data: T, line_num: usize, doc_texts: Vec<String>) -> Self {
         Self {
             doc_texts,
@@ -77,13 +77,13 @@ impl<T> EditableDocument<T> {
     }
 }
 
-impl<T> From<ParsedDocument<T>> for EditableDocument<T> {
-    fn from(parsed: ParsedDocument<T>) -> Self {
-        EditableDocument::new(parsed.data, parsed.doc_texts)
+impl<T> From<ReadonlyDocument<T>> for EditableDocument<T> {
+    fn from(readonly: ReadonlyDocument<T>) -> Self {
+        EditableDocument::new(readonly.data, readonly.doc_texts)
     }
 }
 
-impl<T: Display> Display for ParsedDocument<T> {
+impl<T: Display> Display for ReadonlyDocument<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for doc_line in &self.doc_texts {
             writeln!(f, "{}", doc_line)?;
@@ -101,7 +101,7 @@ impl<T: Display> Display for EditableDocument<T> {
     }
 }
 
-impl<T> Deref for ParsedDocument<T> {
+impl<T> Deref for ReadonlyDocument<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -135,8 +135,8 @@ impl From<PropertyValue> for EditableDocument<PropertyValue> {
     }
 }
 
-pub type ParsedPropertyDocument = ParsedDocument<PropertyValue>;
-pub type ParsedSectionDocument = ParsedDocument<ParsedProperties>;
+pub type ReadonlyPropertyDocument = ReadonlyDocument<PropertyValue>;
+pub type ReadonlySectionDocument = ReadonlyDocument<ReadonlyProperties>;
 
 pub type EditablePropertyDocument = EditableDocument<PropertyValue>;
 pub type EditableSectionDocument = EditableDocument<Properties>;
@@ -169,24 +169,24 @@ pub struct Properties {
 }
 
 #[derive(Clone)]
-pub struct ParsedProperties {
-    inner: Map<String, ParsedPropertyDocument>,
+pub struct ReadonlyProperties {
+    inner: Map<String, ReadonlyPropertyDocument>,
 }
 
-impl ParsedProperties {
+impl ReadonlyProperties {
     pub fn new() -> Self {
         Self { inner: Map::new() }
     }
 
-    pub fn get(&self, key: &str) -> Option<&ParsedPropertyDocument> {
+    pub fn get(&self, key: &str) -> Option<&ReadonlyPropertyDocument> {
         self.inner.get(key)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &ParsedPropertyDocument)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &ReadonlyPropertyDocument)> {
         self.inner.iter()
     }
 
-    pub fn into_iter(self) -> impl Iterator<Item = (String, ParsedPropertyDocument)> {
+    pub fn into_iter(self) -> impl Iterator<Item = (String, ReadonlyPropertyDocument)> {
         self.inner.into_iter()
     }
 }
@@ -222,6 +222,10 @@ impl Properties {
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &PropertyDocument)> {
         self.inner.iter()
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = (String, PropertyDocument)> {
+        self.inner.into_iter()
     }
 
     pub fn set(&mut self, key: PropertyKey, value: PropertyValue) -> Option<PropertyDocument> {
@@ -264,12 +268,12 @@ impl Properties {
     }
 }
 
-impl From<ParsedProperties> for Properties {
-    fn from(parsed_properties: ParsedProperties) -> Self {
+impl From<ReadonlyProperties> for Properties {
+    fn from(readonly_properties: ReadonlyProperties) -> Self {
         let mut properties = Properties::new();
 
-        for (prop_key, parsed_prop) in parsed_properties.into_iter() {
-            let editable_prop = EditableDocument::from(parsed_prop);
+        for (prop_key, readonly_prop) in readonly_properties.into_iter() {
+            let editable_prop = EditableDocument::from(readonly_prop);
             properties.inner.insert(prop_key, editable_prop);
         }
 
@@ -321,17 +325,17 @@ pub enum IniError {
     Config(#[from] ConfigError),
 }
 
-pub struct ParsedIni {
-    sections: Map<SectionKey, ParsedDocument<ParsedProperties>>,
+pub struct ReadonlyIni {
+    sections: Map<SectionKey, ReadonlyDocument<ReadonlyProperties>>,
 }
 
-impl ParsedIni {
-    pub fn section(&self, name: Option<&str>) -> Option<&ParsedDocument<ParsedProperties>> {
+impl ReadonlyIni {
+    pub fn section(&self, name: Option<&str>) -> Option<&ReadonlyDocument<ReadonlyProperties>> {
         let key = name.map(|s| s.to_string());
         self.sections.get(&key)
     }
 
-    pub fn sections(&self) -> &Map<SectionKey, ParsedDocument<ParsedProperties>> {
+    pub fn sections(&self) -> &Map<SectionKey, ReadonlyDocument<ReadonlyProperties>> {
         &self.sections
     }
 
@@ -339,26 +343,109 @@ impl ParsedIni {
         &self,
         section_name: Option<&str>,
         key: &str,
-    ) -> Option<&ParsedPropertyDocument> {
+    ) -> Option<&ReadonlyPropertyDocument> {
         self.section(section_name)
             .and_then(|section| section.get(key))
     }
 }
 
-impl From<ParsedIni> for Ini {
-    fn from(parsed_ini: ParsedIni) -> Self {
-        let mut editable_sections = Map::new();
-
-        for (section_key, parsed_section) in parsed_ini.sections {
-            let editable_properties = Properties::from(parsed_section.data);
-            let editable_section =
-                EditableDocument::new(editable_properties, parsed_section.doc_texts);
-            editable_sections.insert(section_key, editable_section);
-        }
+impl From<ReadonlyIni> for Ini {
+    fn from(readonly_ini: ReadonlyIni) -> Self {
+        let editable_sections = readonly_ini
+            .sections
+            .into_iter()
+            .map(|(section_key, readonly_section)| {
+                let editable_properties = Properties::from(readonly_section.data);
+                let editable_section =
+                    EditableDocument::new(editable_properties, readonly_section.doc_texts);
+                (section_key, editable_section)
+            })
+            .collect();
 
         Ini {
             sections: editable_sections,
         }
+    }
+}
+
+impl TryFrom<Vec<Item<'_>>> for ReadonlyIni {
+    type Error = IniError;
+
+    fn try_from(value: Vec<Item<'_>>) -> Result<Self, Self::Error> {
+        let mut sections = Map::new();
+        // Create initial structure for global section
+        sections.insert(
+            None,
+            ReadonlyDocument::new(ReadonlyProperties::new(), 0, vec![]),
+        );
+
+        let mut current_section: Option<String> = None;
+        let mut pending_docs: Vec<String> = Vec::new();
+        let mut current_line_num = 1; // Start counting from line 1
+
+        for item in value {
+            match item {
+                Item::Blank { raw } => {
+                    pending_docs.push(raw.to_string());
+                    current_line_num += 1; // Count blank lines too
+                }
+                Item::Comment { raw, .. } => {
+                    pending_docs.push(raw.to_string());
+                    current_line_num += 1; // Count comment lines too
+                }
+                Item::Section { name, raw: _ } => {
+                    // Save current pending_docs for new section
+                    let section_docs = if !pending_docs.is_empty() {
+                        pending_docs.drain(..).collect()
+                    } else {
+                        vec![]
+                    };
+
+                    // Create new section, record current line number
+                    let new_section = ReadonlyDocument::new(
+                        ReadonlyProperties::new(),
+                        current_line_num,
+                        section_docs,
+                    );
+                    sections.insert(Some(name.to_string()), new_section);
+                    current_section = Some(name.to_string());
+
+                    current_line_num += 1; // Count section lines
+                }
+                Item::Property { key, val, raw: _ } => {
+                    let section_key = current_section.clone();
+
+                    // Create PropertyValue and PropertyDocument with line number
+                    let property_value = PropertyValue {
+                        value: val.map(|v| v.to_string()),
+                    };
+
+                    let docs = if !pending_docs.is_empty() {
+                        pending_docs.drain(..).collect()
+                    } else {
+                        vec![]
+                    };
+
+                    let property_doc =
+                        ReadonlyDocument::new(property_value, current_line_num, docs);
+
+                    // Insert property to corresponding section
+                    if let Some(section_doc) = sections.get_mut(&section_key) {
+                        section_doc.data.inner.insert(key.to_string(), property_doc);
+                    }
+
+                    current_line_num += 1; // Count property lines
+                }
+                Item::SectionEnd => {
+                    // SectionEnd does not need special handling
+                }
+                Item::Error(err) => {
+                    return Err(ParseError::FailedParse(err.to_string()).into());
+                }
+            }
+        }
+
+        Ok(ReadonlyIni { sections })
     }
 }
 
@@ -604,93 +691,13 @@ impl FromStr for Ini {
     }
 }
 
-impl TryFrom<Vec<Item<'_>>> for ParsedIni {
-    type Error = IniError;
-
-    fn try_from(value: Vec<Item<'_>>) -> Result<Self, Self::Error> {
-        let mut sections = Map::new();
-        // Create initial structure for global section
-        sections.insert(
-            None,
-            ParsedDocument::new(ParsedProperties::new(), 0, vec![]),
-        );
-
-        let mut current_section: Option<String> = None;
-        let mut pending_docs: Vec<String> = Vec::new();
-        let mut current_line_num = 1; // Start counting from line 1
-
-        for item in value {
-            match item {
-                Item::Blank { raw } => {
-                    pending_docs.push(raw.to_string());
-                    current_line_num += 1; // Count blank lines too
-                }
-                Item::Comment { raw, .. } => {
-                    pending_docs.push(raw.to_string());
-                    current_line_num += 1; // Count comment lines too
-                }
-                Item::Section { name, raw: _ } => {
-                    // Save current pending_docs for new section
-                    let section_docs = if !pending_docs.is_empty() {
-                        pending_docs.drain(..).collect()
-                    } else {
-                        vec![]
-                    };
-
-                    // Create new section, record current line number
-                    let new_section = ParsedDocument::new(
-                        ParsedProperties::new(),
-                        current_line_num,
-                        section_docs,
-                    );
-                    sections.insert(Some(name.to_string()), new_section);
-                    current_section = Some(name.to_string());
-
-                    current_line_num += 1; // Count section lines
-                }
-                Item::Property { key, val, raw: _ } => {
-                    let section_key = current_section.clone();
-
-                    // Create PropertyValue and PropertyDocument with line number
-                    let property_value = PropertyValue {
-                        value: val.map(|v| v.to_string()),
-                    };
-
-                    let docs = if !pending_docs.is_empty() {
-                        pending_docs.drain(..).collect()
-                    } else {
-                        vec![]
-                    };
-
-                    let property_doc = ParsedDocument::new(property_value, current_line_num, docs);
-
-                    // Insert property to corresponding section
-                    if let Some(section_doc) = sections.get_mut(&section_key) {
-                        section_doc.data.inner.insert(key.to_string(), property_doc);
-                    }
-
-                    current_line_num += 1; // Count property lines
-                }
-                Item::SectionEnd => {
-                    // SectionEnd does not need special handling
-                }
-                Item::Error(err) => {
-                    return Err(ParseError::FailedParse(err.to_string()).into());
-                }
-            }
-        }
-
-        Ok(ParsedIni { sections })
-    }
-}
-
 impl TryFrom<Vec<Item<'_>>> for Ini {
     type Error = IniError;
 
     fn try_from(value: Vec<Item<'_>>) -> Result<Self, Self::Error> {
-        // First parse to ParsedIni, then use From trait to convert to Ini
-        let parsed_ini: ParsedIni = value.try_into()?;
-        Ok(Ini::from(parsed_ini))
+        // First parse to ReadonlyIni, then use From trait to convert to Ini
+        let readonly_ini: ReadonlyIni = value.try_into()?;
+        Ok(Ini::from(readonly_ini))
     }
 }
 
@@ -769,7 +776,7 @@ static_dir=/var/www
         let _ini2: Ini = result.parse().expect("second parse failed");
 
         println!("Original content:\n{}", content);
-        println!("Parsed result:\n{}", result);
+        println!("Readonly result:\n{}", result);
 
         // Verify expected sections and properties
         assert!(
@@ -1181,7 +1188,7 @@ key1=value1
     }
 
     #[test]
-    fn test_parsed_ini_line_number_tracking() {
+    fn test_readonly_ini_line_number_tracking() {
         let content = r#"; Global comment 1
 global_key=global_value
 
@@ -1197,18 +1204,18 @@ key2=value2
 key3=value3
 "#;
 
-        // First parse to ParsedIni to get line number information
+        // First parse to ReadonlyIni to get line number information
         let items: Vec<Item> = ini_engine::Parser::new(content).collect();
-        let parsed_ini: ParsedIni = items.try_into().expect("Parse failed");
+        let readonly_ini: ReadonlyIni = items.try_into().expect("Parse failed");
 
         // Verify global section line number
-        let global_section = parsed_ini.section(None).unwrap();
+        let global_section = readonly_ini.section(None).unwrap();
         println!("Global section line_num: {}", global_section.line_num());
         assert_eq!(global_section.line_num(), 0); // Default to 0
 
         // Verify global_key line number
         assert_eq!(
-            parsed_ini
+            readonly_ini
                 .get_property(None, "global_key")
                 .map(|v| v.line_num()),
             Some(2)
@@ -1216,19 +1223,19 @@ key3=value3
 
         // Verify section1 line number
         assert_eq!(
-            parsed_ini.section(Some("section1")).map(|s| s.line_num()),
+            readonly_ini.section(Some("section1")).map(|s| s.line_num()),
             Some(5)
         );
 
         // Verify property line numbers
         assert_eq!(
-            parsed_ini
+            readonly_ini
                 .get_property(Some("section1"), "key1")
                 .map(|v| v.line_num()),
             Some(7)
         );
         assert_eq!(
-            parsed_ini
+            readonly_ini
                 .get_property(Some("section1"), "key2")
                 .map(|v| v.line_num()),
             Some(10)
@@ -1236,18 +1243,18 @@ key3=value3
 
         // Verify section2 line number
         assert_eq!(
-            parsed_ini.section(Some("section2")).map(|s| s.line_num()),
+            readonly_ini.section(Some("section2")).map(|s| s.line_num()),
             Some(12)
         );
         assert_eq!(
-            parsed_ini
+            readonly_ini
                 .get_property(Some("section2"), "key3")
                 .map(|v| v.line_num()),
             Some(13)
         );
 
         // Verify document content is correctly preserved
-        let global_property = parsed_ini
+        let global_property = readonly_ini
             .section(None)
             .unwrap()
             .data
@@ -1259,7 +1266,7 @@ key3=value3
             &["; Global comment 1".to_string()]
         );
 
-        let section1 = parsed_ini.section(Some("section1")).unwrap();
+        let section1 = readonly_ini.section(Some("section1")).unwrap();
         assert_eq!(
             section1.doc_texts(),
             &["", "; section1 comment"].map(|s| s.to_string())
@@ -1269,7 +1276,7 @@ key3=value3
         assert_eq!(key1_property.doc_texts(), &["; key1 comment".to_string()]);
 
         // Test converting to editable structure
-        let editable_ini: Ini = parsed_ini.into();
+        let editable_ini: Ini = readonly_ini.into();
         assert_eq!(
             editable_ini.get_string(None, "global_key"),
             Some("global_value")
@@ -1344,36 +1351,36 @@ host=localhost
 port=3306
 "#;
 
-        // 1. Parse to ParsedIni (preserve line number information)
+        // 1. Parse to ReadonlyIni (preserve line number information)
         let items: Vec<Item> = ini_engine::Parser::new(content).collect();
-        let parsed_ini: ParsedIni = items.try_into().expect("Parse failed");
+        let readonly_ini: ReadonlyIni = items.try_into().expect("Parse failed");
 
         // Check line number information
         assert_eq!(
-            parsed_ini
+            readonly_ini
                 .get_property(None, "global_setting")
                 .map(|v| v.line_num()),
             Some(2)
         );
         assert_eq!(
-            parsed_ini.section(Some("database")).map(|s| s.line_num()),
+            readonly_ini.section(Some("database")).map(|s| s.line_num()),
             Some(4)
         );
         assert_eq!(
-            parsed_ini
+            readonly_ini
                 .get_property(Some("database"), "host")
                 .map(|v| v.line_num()),
             Some(5)
         );
         assert_eq!(
-            parsed_ini
+            readonly_ini
                 .get_property(Some("database"), "port")
                 .map(|v| v.line_num()),
             Some(6)
         );
 
         // 2. 转换为可编辑的 Ini（丢弃行号，保留内容）
-        let mut editable_ini: Ini = parsed_ini.into();
+        let mut editable_ini: Ini = readonly_ini.into();
 
         // Verify content conversion is correct
         assert_eq!(
@@ -1416,7 +1423,7 @@ port=3306
     }
 
     #[test]
-    fn test_from_parsed_ini_trait() {
+    fn test_from_readonly_ini_trait() {
         let content = r#"; Config header
 global_setting=value
 
@@ -1425,12 +1432,12 @@ host=localhost
 port=3306
 "#;
 
-        // 1. 解析为 ParsedIni
+        // 1. 解析为 ReadonlyIni
         let items: Vec<Item> = ini_engine::Parser::new(content).collect();
-        let parsed_ini: ParsedIni = items.try_into().expect("解析失败");
+        let readonly_ini: ReadonlyIni = items.try_into().expect("解析失败");
 
         // 2. 使用 From trait 转换为 Ini
-        let editable_ini: Ini = parsed_ini.into();
+        let editable_ini: Ini = readonly_ini.into();
 
         // 3. Verify conversion result
         assert_eq!(
@@ -1450,22 +1457,22 @@ port=3306
     }
 
     #[test]
-    fn test_from_parsed_document_trait() {
-        // 创建一个 ParsedDocument
+    fn test_from_readonly_document_trait() {
+        // 创建一个 ReadonlyDocument
         let property_value = PropertyValue {
             value: Some("test_value".to_string()),
         };
         let doc_texts = vec!["; Test comment".to_string()];
-        let parsed_doc = ParsedDocument::new(property_value, 5, doc_texts.clone());
+        let readonly_doc = ReadonlyDocument::new(property_value, 5, doc_texts.clone());
 
         // 使用 From trait 转换为 EditableDocument
-        let editable_doc: EditableDocument<PropertyValue> = parsed_doc.into();
+        let editable_doc: EditableDocument<PropertyValue> = readonly_doc.into();
 
         // Verify conversion result
         assert_eq!(editable_doc.doc_texts(), &doc_texts);
         assert_eq!(editable_doc.value, Some("test_value".to_string()));
 
-        println!("ParsedDocument From trait conversion test successful");
+        println!("ReadonlyDocument From trait conversion test successful");
     }
 
     #[test]
@@ -1484,25 +1491,25 @@ port=3306
         let editable_section: EditableDocument<Properties> = properties.into();
         assert!(editable_section.is_empty());
 
-        // 3. ParsedDocument<PropertyValue> -> EditableDocument<PropertyValue>
-        let parsed_prop = ParsedDocument::new(
+        // 3. ReadonlyDocument<PropertyValue> -> EditableDocument<PropertyValue>
+        let readonly_prop = ReadonlyDocument::new(
             PropertyValue {
-                value: Some("parsed_value".to_string()),
+                value: Some("readonly_value".to_string()),
             },
             10,
             vec!["; Comment".to_string()],
         );
-        let editable_prop2: EditableDocument<PropertyValue> = parsed_prop.into();
-        assert_eq!(editable_prop2.value, Some("parsed_value".to_string()));
+        let editable_prop2: EditableDocument<PropertyValue> = readonly_prop.into();
+        assert_eq!(editable_prop2.value, Some("readonly_value".to_string()));
         assert_eq!(editable_prop2.doc_texts(), &["; Comment".to_string()]);
 
-        // 4. ParsedProperties -> Properties (Test through ParsedIni since ParsedProperties internals are private)
+        // 4. ReadonlyProperties -> Properties (Test through ReadonlyIni since ReadonlyProperties internals are private)
 
-        // 5. ParsedIni -> Ini (Test through parsing)
+        // 5. ReadonlyIni -> Ini (Test through parsing)
         let content = r#"key=value"#;
         let items: Vec<Item> = ini_engine::Parser::new(content).collect();
-        let parsed_ini: ParsedIni = items.try_into().expect("Parse failed");
-        let editable_ini: Ini = parsed_ini.into();
+        let readonly_ini: ReadonlyIni = items.try_into().expect("Parse failed");
+        let editable_ini: Ini = readonly_ini.into();
         assert_eq!(editable_ini.get_string(None, "key"), Some("value"));
 
         println!("All From trait conversion tests successful");
