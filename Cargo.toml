@@ -1,6 +1,6 @@
 [package]
 name = "ini-doc"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 publish = true
 description = "A Rust library for reading and writing INI files with support for comments and sections."
@@ -11,14 +11,8 @@ keywords = [
 ]
 license = "MIT"
 
-[features]
-default = [
-    "ordered",
-]
-ordered = [
-    "dep:indexmap",
-]
+
 [dependencies]
-indexmap = { version = "^2", optional = true }
+indexmap =  "^2"
 ini-roundtrip = "^0.2"
 thiserror = "^2"

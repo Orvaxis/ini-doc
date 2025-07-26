@@ -17,11 +17,10 @@ Add the following to your `Cargo.toml`:
 ini-doc = "0.1"
 ```
 
-The ordered feature is enabled by default; no extra configuration is needed.
 
 ## Dependencies
 - [ini-roundtrip](https://crates.io/crates/ini-roundtrip)
-- [indexmap](https://crates.io/crates/indexmap) (default)
+- [indexmap](https://crates.io/crates/indexmap)
 - [thiserror](https://crates.io/crates/thiserror)
 
 ## License
